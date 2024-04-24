@@ -80,19 +80,21 @@ class AdamW(Optimizer):
                 if p.grad is None:
                     continue
                 grad = p.grad
+                if isinstance(grad, torch.distributed._tensor.DTensor):
+                    grad = grad.to_local()
                 if grad.is_sparse:
                     raise RuntimeError("Adam does not support sparse gradients, please consider SparseAdam instead")
 
                 state = self.state[p]
-                
+
                 if "step" not in state:
                     state["step"] = 0
-                        
+
                 # GaLore Projection
                 if "rank" in group:
                     if "projector" not in state:
                         state["projector"] = GaLoreProjector(group["rank"], update_proj_gap=group["update_proj_gap"], scale=group["scale"], proj_type=group["proj_type"])
-                    
+
                     grad = state["projector"].project(grad, state["step"])
 
                 # State initialization
@@ -121,11 +123,19 @@ class AdamW(Optimizer):
 
                 # compute norm gradient
                 norm_grad = exp_avg / denom
-                
+
                 # GaLore Projection Back
                 if "rank" in group:
                     norm_grad = state["projector"].project_back(norm_grad)
-                
+
+                if isinstance(p, torch.distributed._tensor.DTensor):
+                    spec = p._spec
+                    norm_grad = torch.distributed._tensor.DTensor.from_local(
+                        norm_grad,
+                        spec.mesh,
+                        spec.placements,
+                    )
+
                 p.add_(norm_grad, alpha=-step_size)
 
                 # Just adding the square of the weights to the loss function is *not*
